@@ -105,6 +105,13 @@ ZEND_END_MODULE_GLOBALS(blitz)
 #define BLITZ_EXPR_OPERATOR_N       (9 | BLITZ_ARG_TYPE_EXPR_SHIFT)
 #define BLITZ_EXPR_OPERATOR_LP      (10 | BLITZ_ARG_TYPE_EXPR_SHIFT)
 #define BLITZ_EXPR_OPERATOR_RP      (11 | BLITZ_ARG_TYPE_EXPR_SHIFT)
+#define BLITZ_EXPR_OPERATOR_ADD     (12 | BLITZ_ARG_TYPE_EXPR_SHIFT)
+#define BLITZ_EXPR_OPERATOR_SUB     (13 | BLITZ_ARG_TYPE_EXPR_SHIFT)
+#define BLITZ_EXPR_OPERATOR_MUL     (14 | BLITZ_ARG_TYPE_EXPR_SHIFT)
+#define BLITZ_EXPR_OPERATOR_DIV     (15 | BLITZ_ARG_TYPE_EXPR_SHIFT)
+#define BLITZ_EXPR_OPERATOR_MOD     (16 | BLITZ_ARG_TYPE_EXPR_SHIFT)
+#define BLITZ_EXPR_OPERATOR_METHOD  (17 | BLITZ_ARG_TYPE_EXPR_SHIFT)
+#define BLITZ_EXPR_OPERATOR_COMMA   (18 | BLITZ_ARG_TYPE_EXPR_SHIFT)
 
 #define BLITZ_TAG_VAR_PREFIX    		'$'
 #define BLITZ_TAG_VAR_PREFIX_S  		"$"
@@ -347,6 +354,8 @@ typedef struct _blitz_node {
     unsigned long lexem_len;
     call_arg *args;
     unsigned char n_args;
+    unsigned char n_arg_alloc;
+    unsigned char n_if_args; // number of args in the IF()/UNLESS() statement
     struct _blitz_node *first_child;
     struct _blitz_node *next;
     unsigned int pos_in_list;
@@ -467,27 +476,51 @@ typedef struct _blitz_analizer_ctx {
 
 #define BLITZ_IS_OPERATOR(c)                                                   \
   ( (c) == '=' || (c) == '>' || (c) == '<' || (c) == '&' || (c) == '|'         \
-    || (c) == '!' || (c) == '(' || (c) == ')'                                  \
+    || (c) == '!' || (c) == '(' || (c) == ')' || (c) == '+' || (c) == '-'      \
+    || (c) == '*' || (c) == '/' || (c) == '^' || (c) == '%' || (c) == ','      \
   )
 
-#define BLITZ_OPERATOR_HAS_PRECEDENCE(a, b)                                    \
-  ( BLITZ_OPERATOR_GET_PRECEDENCE(a) <= BLITZ_OPERATOR_GET_PRECEDENCE(b)       \
-  )
+#define BLITZ_OPERATOR_HAS_LOWER_PRECEDENCE(a, b)                              \
+  (( (BLITZ_OPERATOR_IS_LEFT_ASSOCIATIVE(a) &&                                 \
+     (BLITZ_OPERATOR_GET_PRECEDENCE(a) <= BLITZ_OPERATOR_GET_PRECEDENCE(b)))   \
+  ) || ( (BLITZ_OPERATOR_IS_LEFT_ASSOCIATIVE(a) &&                             \
+     (BLITZ_OPERATOR_GET_PRECEDENCE(a) < BLITZ_OPERATOR_GET_PRECEDENCE(b)))    \
+  ))                                                                           \
 
 #define BLITZ_OPERATOR_GET_PRECEDENCE(c)                                       \
   (                                                                            \
-    ((c) == BLITZ_EXPR_OPERATOR_LP || (c) == BLITZ_EXPR_OPERATOR_RP) ? 0 :     \
-    ((c) == BLITZ_EXPR_OPERATOR_N) ? 1 :                                       \
+    ((c) == BLITZ_EXPR_OPERATOR_LP || (c) == BLITZ_EXPR_OPERATOR_RP) ? 9 :     \
+    ((c) == BLITZ_EXPR_OPERATOR_N) ? 8 :                                       \
+    ((c) == BLITZ_EXPR_OPERATOR_MOD) ? 7 :                                     \
+    ((c) == BLITZ_EXPR_OPERATOR_MUL || (c) == BLITZ_EXPR_OPERATOR_DIV) ? 6 :   \
+    ((c) == BLITZ_EXPR_OPERATOR_ADD || (c) == BLITZ_EXPR_OPERATOR_SUB) ? 5 :   \
     ((c) == BLITZ_EXPR_OPERATOR_LE || (c) == BLITZ_EXPR_OPERATOR_L             \
-     || (c) == BLITZ_EXPR_OPERATOR_GE || (c) == BLITZ_EXPR_OPERATOR_G) ? 2 :   \
+     || (c) == BLITZ_EXPR_OPERATOR_GE || (c) == BLITZ_EXPR_OPERATOR_G) ? 4 :   \
     ((c) == BLITZ_EXPR_OPERATOR_E || (c) == BLITZ_EXPR_OPERATOR_NE) ? 3 :      \
-    ((c) == BLITZ_EXPR_OPERATOR_LA) ? 4 :                                      \
-    ((c) == BLITZ_EXPR_OPERATOR_LO) ? 5 :                                      \
-    6                                                                          \
+    ((c) == BLITZ_EXPR_OPERATOR_LA) ? 2 :                                      \
+    ((c) == BLITZ_EXPR_OPERATOR_LO) ? 1 :                                      \
+    0                                                                          \
+  )
+
+#define BLITZ_OPERATOR_IS_LEFT_ASSOCIATIVE(c)                                  \
+  (                                                                            \
+    (c) == BLITZ_EXPR_OPERATOR_N ? 0 : 1                                       \
   )
 
 #define BLITZ_OPERATOR_GET_NUM_OPERANDS(c)                                     \
-  ( (c) == BLITZ_EXPR_OPERATOR_N ? 1 : 2                                       \
+  ( (c) == BLITZ_EXPR_OPERATOR_METHOD ? 0 :                                    \
+  (c) == BLITZ_EXPR_OPERATOR_N ? 1 : 2                                         \
+  )
+
+#define BLITZ_ARG_TO_STRING(c)                                                 \
+  ( (c) == BLITZ_ARG_TYPE_VAR ? "var" :                                        \
+    (c) == BLITZ_ARG_TYPE_VAR_PATH ? "var_path" :                              \
+    (c) == BLITZ_ARG_TYPE_STR ? "str" :                                        \
+    (c) == BLITZ_ARG_TYPE_NUM ? "num" :                                        \
+    (c) == BLITZ_ARG_TYPE_FALSE ? "false" :                                    \
+    (c) == BLITZ_ARG_TYPE_TRUE ? "true" :                                      \
+    (c) == BLITZ_ARG_TYPE_FLOAT ? "float" :                                    \
+    BLITZ_OPERATOR_TO_STRING(c)                                                \
   )
 
 #define BLITZ_OPERATOR_TO_STRING(c)                                            \
@@ -501,7 +534,14 @@ typedef struct _blitz_analizer_ctx {
     (c) == BLITZ_EXPR_OPERATOR_LO ? "||" :                                     \
     (c) == BLITZ_EXPR_OPERATOR_N ? "!" :                                       \
     (c) == BLITZ_EXPR_OPERATOR_LP ? "(" :                                      \
-    (c) == BLITZ_EXPR_OPERATOR_RP ? ")" : "<UNKNOWN>"                          \
+    (c) == BLITZ_EXPR_OPERATOR_RP ? ")" :                                      \
+    (c) == BLITZ_EXPR_OPERATOR_ADD ? "+" :                                     \
+    (c) == BLITZ_EXPR_OPERATOR_SUB ? "-" :                                     \
+    (c) == BLITZ_EXPR_OPERATOR_MUL ? "*" :                                     \
+    (c) == BLITZ_EXPR_OPERATOR_DIV ? "/" :                                     \
+    (c) == BLITZ_EXPR_OPERATOR_MOD ? "%" :                                     \
+    (c) == BLITZ_EXPR_OPERATOR_METHOD ? "method" :                             \
+    (c) == BLITZ_EXPR_OPERATOR_COMMA ? "," : "<UNKNOWN>"                       \
   )
 
 #define BLITZ_SCAN_SINGLE_QUOTED(c, p, pos, len, ok)                           \
@@ -544,15 +584,18 @@ typedef struct _blitz_analizer_ctx {
     }                                                                          \
     *(p) = '\x0';
 
-#define BLITZ_SCAN_NUMBER(c, p, pos, symb, has_dot)                                     \
+#define BLITZ_SCAN_NUMBER(c, p, pos, symb, has_dot, is_operator) {                      \
+    is_operator = (*(c) == '-' ? 1 : 0);                                                \
     while(((symb) = *(c)) && (BLITZ_IS_NUMBER(symb) || (symb == '.' && !has_dot))) {    \
         if (symb == '.') has_dot = 1;                                                   \
+        if (symb != '-' && is_operator) is_operator = 0;                                \
         *(p) = symb;                                                                    \
         ++(p);                                                                          \
         ++(c);                                                                          \
         ++(pos);                                                                        \
     }                                                                                   \
-    *(p) = '\x0';
+    *(p) = '\x0'; \
+   }
 
 #define BLITZ_SCAN_ALNUM(c, p, pos, symb)                                                \
     while(((symb) = *(c)) && (BLITZ_IS_NUMBER(symb) || BLITZ_IS_ALPHA(symb))) {          \
@@ -628,7 +671,36 @@ typedef struct _blitz_analizer_ctx {
     } else if (*(c) == ')') {                                                                       \
         i_type = BLITZ_EXPR_OPERATOR_RP;                                                            \
         i_len = 1;                                                                                  \
+    } else if (*(c) == '+') {                                                                       \
+        i_type = BLITZ_EXPR_OPERATOR_ADD;                                                           \
+        i_len = 1;                                                                                  \
+    } else if (*(c) == '-') {                                                                       \
+        i_type = BLITZ_EXPR_OPERATOR_SUB;                                                           \
+        i_len = 1;                                                                                  \
+    } else if (*(c) == '*') {                                                                       \
+        i_type = BLITZ_EXPR_OPERATOR_MUL;                                                           \
+        i_len = 1;                                                                                  \
+    } else if (*(c) == '/') {                                                                       \
+        i_type = BLITZ_EXPR_OPERATOR_DIV;                                                           \
+        i_len = 1;                                                                                  \
+    } else if (*(c) == '%') {                                                                       \
+        i_type = BLITZ_EXPR_OPERATOR_MOD;                                                           \
+        i_len = 1;                                                                                  \
+    } else if (*(c) == ',') {                                                                       \
+        i_type = BLITZ_EXPR_OPERATOR_COMMA;                                                         \
+        i_len = 1;                                                                                  \
     }                                                                                               \
+
+typedef int (*zend_native_function)(zval *, zval *, zval * TSRMLS_CC);
+
+#define BLITZ_OPERATOR_TO_ZEND_NATIVE_FUNCTION(op)                                                  \
+    ( (op == BLITZ_EXPR_OPERATOR_ADD) ? add_function :                                              \
+      (op == BLITZ_EXPR_OPERATOR_SUB) ? sub_function :                                              \
+      (op == BLITZ_EXPR_OPERATOR_MUL) ? mul_function :                                              \
+      (op == BLITZ_EXPR_OPERATOR_DIV) ? div_function :                                              \
+      (op == BLITZ_EXPR_OPERATOR_MOD) ? mod_function :                                              \
+      NULL                                                                                          \
+    )
 
 #define BLITZ_CALL_STATE_NEXT_ARG    1
 #define BLITZ_CALL_STATE_FINISHED    2
@@ -637,12 +709,20 @@ typedef struct _blitz_analizer_ctx {
 #define BLITZ_CALL_STATE_END         5
 #define BLITZ_CALL_STATE_IF          6
 #define BLITZ_CALL_STATE_ELSE        7
+#define BLITZ_CALL_STATE_NEXT_ARG_IF 8
 #define BLITZ_CALL_STATE_ERROR       0
 
 #define BLITZ_CALL_ERROR             1
 #define BLITZ_CALL_ERROR_IF          2
 #define BLITZ_CALL_ERROR_INCLUDE     3
 #define BLITZ_CALL_ERROR_IF_CONTEXT  4
+
+#define BLITZ_CALL_ERROR_IF_MISSING_BRACKETS     5
+#define BLITZ_CALL_ERROR_IF_NOT_ENOUGH_OPERANDS  6
+#define BLITZ_CALL_ERROR_IF_EMPTY_EXPRESSION     7
+#define BLITZ_CALL_ERROR_IF_TOO_COMPLEX          8
+
+#define BLITZ_CALL_ERROR_IF_METHOD_CALL_TOO_COMPLEX 9
 
 #define BLITZ_ZVAL_NOT_EMPTY(z, res)                                                              \
     switch (Z_TYPE_PP(z)) {                                                                       \
@@ -782,30 +862,19 @@ typedef struct _blitz_analizer_ctx {
         );                                                                                        \
     }                                                                                             \
 
-#define BLITZ_IF_STACK_PUSH(stack, stack_level, argument)                                         \
+#define BLITZ_IF_STACK_PUSH(stack, stack_level, aname, alen, atype, error)                        \
     if ((stack_level + 1) < BLITZ_IF_STACK_MAX) {                                                 \
         ++stack_level;                                                                            \
-        stack[stack_level] = argument;                                                            \
+        stack[stack_level].name = aname;                                                          \
+        stack[stack_level].len = alen;                                                            \
+        stack[stack_level].type = atype;                                                          \
     } else {                                                                                      \
         php_error_docref(NULL TSRMLS_CC, E_WARNING,                                               \
             "Too complex conditional, operator stack depth is too high and broken, operators "    \
             "will  be resolved improperly. To fix this rebuild blitz extension with increased "   \
             "BLITZ_IF_STACK_MAX constant in php_blitz.h"                                          \
         );                                                                                        \
-    }                                                                                             \
-
-#define BLITZ_EXPR_STACK_PUSH(stack, stack_level, aname, alen, atype)                             \
-    if ((stack_level + 1) < BLITZ_IF_STACK_MAX) {                                                 \
-        ++stack_level;                                                                            \
-        stack[stack_level].name = (aname);                                                        \
-        stack[stack_level].len = (alen);                                                          \
-        stack[stack_level].type = (atype);                                                        \
-    } else {                                                                                      \
-        php_error_docref(NULL TSRMLS_CC, E_WARNING,                                               \
-            "Too complex conditional, operator stack depth is too high and broken, operators "    \
-            "will  be resolved improperly. To fix this rebuild blitz extension with increased "   \
-            "BLITZ_IF_STACK_MAX constant in php_blitz.h"                                          \
-        );                                                                                        \
+        error = BLITZ_CALL_ERROR_IF_TOO_COMPLEX;                                                  \
     }                                                                                             \
 
 #define BLITZ_GET_PREDEFINED_VAR_EX(tpl, n, len, value, stack_level)                                                   \
